@@ -23,7 +23,7 @@ data (Firestore) at runtime, so the same codebase can be reused for any property
 - [Project structure](#project-structure)
 - [Architecture](#architecture)
 - [Getting started](#getting-started)
-- [Firebase setup (Phase 11)](#firebase-setup-phase-11)
+- [Data storage, export and the admin tool](#data-storage-export-and-the-admin-tool)
 - [Running & verifying](#running--verifying)
 - [Testing](#testing)
 - [Roadmap](#roadmap)
@@ -69,8 +69,8 @@ explicitly requested** (see the spec's incremental development rule).
 | **8** | Check-in / Check-out (status transitions, audit) | ✅ **Done** |
 | 9 | Expenses & Cash management | ⬜ Planned |
 | 10 | Reports (daily, monthly, room-wise, payment-wise) | ⬜ Planned |
-| 11 | Firebase (auth, Firestore repositories, rules, offline) | ⬜ Planned |
-| 12 | Multi-device testing (Phone A ⇄ Firestore ⇄ Phone B) | ⬜ Planned |
+| **11** | ~~Firebase~~ replaced by local persistence + manual export | ✅ **Done** |
+| **12** | Device persistence and export round-trip testing | ⬜ Manual |
 | 13 | Production hardening (errors, security, perf, release build) | ⬜ Planned |
 
 ### What works today (Phases 1–8)
@@ -143,9 +143,11 @@ explicitly requested** (see the spec's incremental development rule).
 | UI | Material 3 (`useMaterial3: true`) |
 | Primary target | Android |
 | Dev target | Chrome / Web |
-| Auth (planned) | Firebase Authentication (email/password) |
-| Database (planned) | Cloud Firestore with offline persistence |
-| Firebase project (planned) | `stay-manager-dev` |
+| Auth | Local email/password sign-in (roles only — not a security boundary) |
+| Database | Local JSON document on device (write-through on every save) |
+| Reporting | CSV/JSON export via the system share sheet → WhatsApp |
+| Admin tool | `admin_tool/admin_tool.html` — offline, browser `localStorage` |
+| Cloud | **None** — no cloud service is used or billed |
 | Lints | `flutter_lints` |
 | IDE | VS Code |
 
@@ -324,139 +326,54 @@ flutter doctor
 flutter pub get
 ```
 
-`firebase_core`, `cloud_firestore` and `firebase_auth` are now added (Phase 11
-in progress). See [Firebase setup](#firebase-setup-phase-11) for the console
-steps and the FlutterFire CLI.
+`share_plus` and `path_provider` are used for exports. `firebase_core`,
+`cloud_firestore` and `firebase_auth` remain in `pubspec.yaml` but are **not
+wired in** — see [Data storage, export and the admin
+tool](#data-storage-export-and-the-admin-tool).
 
 ---
 
-## Firebase setup (Phase 11)
+## Data storage, export and the admin tool
 
-Everything except the console clicks is already in place. The app **still runs
-without Firebase** — it falls back to the in-memory repositories — so you can
-do this at your own pace.
+The application has **no cloud dependency** and cannot incur a cloud bill.
 
-### 1. Create the Firebase project
+### On the staff phone
 
-1. Go to <https://console.firebase.google.com> and sign in with a **Google
-   account** (a new one is fine — you do not need a paid plan; the Spark plan
-   is enough for a small property).
-2. Click **Add project**.
-   - Project name: `stay-manager-dev` (as in the specification)
-   - Google Analytics: **disable** it (not needed for this app)
-3. When the project is ready, note the **Project ID** (it may differ slightly
-   from the name).
+Booking data is written to a JSON document on the device on every save, so
+closing the app never loses anything. No network is used at all.
 
-### 2. Create a Firestore database
+### Sharing data with the administrator
 
-1. In the console, go to **Build → Firestore Database**.
-2. Click **Create database**.
-3. Choose **Start in production mode** — the
-   [`firestore.rules`](firestore.rules) in this repo already denies everything
-   by default, so production mode is the safe choice.
-4. Pick a location close to your property (e.g. `asia-south1 (Mumbai)`).
+1. **More \u2192 Share booking data**
+2. Review what will be included (bookings, payments, guest details).
+3. Tap **Share via WhatsApp** and choose the admin chat.
 
-### 3. Enable Authentication
+A CSV file is generated and handed to the system share sheet. Nothing is sent
+automatically, and **no file is ever read back into the app** \u2014 the staff
+device remains the single source of truth.
 
-1. Go to **Build → Authentication**.
-2. Click **Get started**.
-3. Under **Sign-in method**, enable **Email/Password**
-   (the spec deliberately avoids SMS/phone auth to keep cost and complexity
-   down).
-4. Click **Save**.
+### On the admin's computer
 
-### 4. Install the FlutterFire CLI
+Open [`admin_tool/admin_tool.html`](admin_tool/admin_tool.html) in any browser.
+It needs no server, no account and no API key.
 
-This is the official tool that generates `firebase_options.dart` and registers
-the Android app.
+1. Choose the exported JSON file and click **Import file**.
+2. Review totals, outstanding balances and the booking table.
+3. Click **Download JSON / CSV / backup** and upload the file to Google Drive
+   yourself if you want it there.
 
-```powershell
-# 1. Install (requires Node.js, already present as v22)
-dart pub global activate flutterfire_cli
+Data stays in the browser's localStorage until you download it.
 
-# 2. Add the pub cache bin folder to PATH for this session
-$env:Path += ";$env:LOCALAPPDATA\Pub\Cache\bin"
+### Restoring the cloud path (optional, not currently wired)
 
-# 3. Verify
-flutterfire --version
-```
+The Firebase implementation is still in the repository but unused. To re-enable
+it, run `flutterfire configure` and point `lib/main.dart` at the Firestore
+repositories. No screen code changes are required \u2014 both paths implement the
+same repository interfaces.
 
-> If step 3 fails, restart your terminal, or add
-> `%LOCALAPPDATA%\Pub\Cache\bin` to your system PATH permanently.
+See [`firestore.rules`](firestore.rules) and `firebase.json` for that path.
 
-### 5. Connect the project
-
-From `c:\Development\hotel-management\stay_manager`:
-
-```powershell
-flutterfire configure `
-  --project=stay-manager-dev `
-  --platforms=android,web `
-  --android-package-name=com.example.stay_manager `
-  --android-language=kotlin
-```
-
-This will:
-
-- sign you in to Firebase
-- download **`google-services.json`** into `android/app/`
-- generate **`lib/firebase_options.dart`**
-- register the Android app in the project
-
-Accept the defaults for anything not specified above.
-
-### 6. Verify
-
-```powershell
-flutter analyze
-flutter run -d chrome
-```
-
-Once `firebase_options.json` / `google-services.json` exist,
-`FirebaseBootstrap.initialize()` succeeds and `main.dart` automatically swaps
-the in-memory repositories for the Firestore-backed ones — **no other code
-changes required**.
-
-### 7. Deploy the security rules
-
-Rules in this repo are only local until deployed:
-
-```powershell
-# Install the CLI once (requires Node.js)
-npm install -g firebase-tools
-
-# Log in and deploy the rules
-firebase login
-firebase use --add          # pick stay-manager-dev
-firebase deploy --only firestore:rules
-```
-
-The rules enforce what the spec requires:
-
-| Rule | Effect |
-| ---- | ------ |
-| Unauthenticated | Cannot read or write any business data |
-| Property isolation | Every query/document is scoped to the caller's `propertyId` |
-| `ADMIN` | Full access: configuration, rooms, users, expenses, reports |
-| `STAFF` | Operational only: bookings, payments, guests, room status |
-| Default deny | Anything not explicitly allowed is refused |
-
-> UI hiding is **never** the security boundary — the rules are.
-
-### Notes and troubleshooting
-
-- **`firebase_options.dart` contains no secrets**, but it is
-  environment-specific. It is safe to commit, or add it to `.gitignore` if you
-  prefer. `google-services.json` is likewise not a secret for Android, but keep
-  it out of public repositories anyway.
-- **Windows symlink warning** during `pub add`: enable
-  **Developer Mode** (Settings → System → For developers) or run PowerShell as
-  Administrator. It only affects local tooling, not the app.
-- **Offline behaviour**: Firestore's offline cache means the app keeps working
-  without internet and syncs automatically when connectivity returns.
-- **Seeded data**: the first run provisions the sample property and 9 rooms from
-  [`lib/data/config/property_seed.dart`](lib/data/config/property_seed.dart),
-  which you can then edit in *More → Property setup*.
+---
 
 ## Running & verifying
 

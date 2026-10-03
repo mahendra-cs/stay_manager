@@ -31,18 +31,22 @@ Technology:
 * Flutter
 * Dart
 * Material 3
-* Firebase Authentication
-* Cloud Firestore
-* Firestore offline persistence
+* Local on-device storage (JSON document per device)
+* WhatsApp for optional manual export to the administrator
 * Android as the primary target
 * Chrome/Web may be used during development
 * VS Code is the primary IDE
 
-Firebase project:
+Cloud project:
 
 ```text
-stay-manager-dev
+none - the application runs with no cloud dependency
 ```
+
+> **Amendment (2026-10-10).** The original specification required Firebase
+> Authentication + Cloud Firestore. This was replaced by a local-first design so
+> the application carries no cloud cost. See section 6 and the decision record
+> in section 31. Firebase code is retained in the repository but is not wired in.
 
 ---
 
@@ -170,12 +174,40 @@ Do not introduce additional backend infrastructure.
 
 # 6. Backend
 
-Use:
+## 6.1 Current decision — no backend
+
+The application has **no server and no cloud dependency**. Each device owns its
+own data and persists it locally.
+
+Storage:
 
 ```text
-Firebase Authentication
-Cloud Firestore
+On-device JSON document (application documents directory)
+  stay_manager_data.json
+  ├── guests
+  ├── bookings
+  ├── payments
+  ├── expenses
+  └── cashSessions
 ```
+
+Every write is flushed to disk immediately and re-read at startup, so closing
+the app never loses data.
+
+Optional reporting path (never required for core operation):
+
+```text
+Staff phone  →  CSV/JSON export  →  WhatsApp  →  Admin's computer
+                                                         ↓
+                                    admin_tool.html (browser, localStorage)
+                                                         ↓
+                                              Download → Google Drive (manual)
+```
+
+The admin tool is a single self-contained HTML page. It requires no server, no
+account and no API key. Data stays in the browser until the admin downloads it.
+
+## 6.2 Still forbidden
 
 Do NOT introduce:
 
@@ -183,11 +215,39 @@ Do NOT introduce:
 * PostgreSQL
 * Azure
 * Custom REST backend
-* WhatsApp-based synchronization
 * Separate server
-* Cloud Functions unless there is a clear unavoidable requirement
+* Cloud Functions
+* Any service that bills the property owner
 
-Firestore should provide synchronization and offline caching.
+## 6.3 Export is one-way
+
+The WhatsApp export is a **snapshot for records**, never a synchronization
+channel:
+
+* No file is ever read back into the application.
+* The staff device remains the single source of truth.
+* The admin must never hand-edit data that will be re-imported, because there
+  is no merge step and no conflict resolution.
+
+---
+
+## 6.4 Superseded requirement (kept for reference)
+
+The original specification required:
+
+```text
+Firebase Authentication
+Cloud Firestore
+```
+
+and explicitly forbade:
+
+* WhatsApp-based synchronization
+* manual exports
+
+That requirement was replaced on 2026-10-10. The Firestore repositories, security
+rules and auth service are retained in the repository so the cloud path can be
+restored by repointing `lib/main.dart`.
 
 ---
 
@@ -200,19 +260,27 @@ ADMIN
 STAFF
 ```
 
-Use Firebase Authentication.
+## 7.1 Current decision — local sign-in
 
-Prefer email/password authentication for V1.
+There is no identity provider. The application uses a local sign-in screen
+(`InMemoryAuthService`) purely to distinguish roles within the device. It is a
+usability feature, **not a security control**: anyone holding the unlocked device
+has full access (see section 25.2).
 
-Avoid phone/SMS authentication because SMS introduces unnecessary cost and complexity.
+Requirements:
 
-Store user profile/role information in:
+* Email/password only. Never add SMS/phone authentication — SMS introduces
+  cost and complexity for no benefit here.
+* Sign-in must be skippable while no identity provider is configured, so local
+  development is never blocked.
+* Roles default to `STAFF` (least privilege).
 
-```text
-users/{userId}
-```
+## 7.2 Superseded — Firebase Authentication
 
-Example:
+The original requirement was to use Firebase Authentication with email/password,
+storing profiles in `users/{userId}`. That implementation is retained in
+`lib/data/repositories/firebase_auth_service.dart` and the `AppUser` model keeps
+the same shape:
 
 ```json
 {
@@ -225,6 +293,8 @@ Example:
   "updatedAt": "..."
 }
 ```
+
+If a cloud identity provider is reintroduced, this document shape must be kept.
 
 ---
 
@@ -269,33 +339,33 @@ updatedAt
 
 The UI must load this information dynamically.
 
+> **Note.** The `properties/{propertyId}` document reference is the original
+> Firestore layout. Configuration is now held in memory and edited in-app, so
+> this section describes *what* must be configurable, not where it is stored.
+
 ---
 
-# 9. Firestore Data Model
+# 9. Data Model
 
-Design the database so multi-property support is possible.
+Design the data so multi-property support remains possible.
 
-Recommended collections:
+## 9.1 Current storage
+
+A single JSON document on the device, keyed by record id:
 
 ```text
-properties/{propertyId}
-
-users/{userId}
-
-rooms/{roomId}
-
-guests/{guestId}
-
-bookings/{bookingId}
-
-payments/{paymentId}
-
-expenses/{expenseId}
-
-settings/{settingId}
+stay_manager_data.json
+├── property      (configuration)
+├── rooms         { roomId: {...} }
+├── guests        { guestId: {...} }
+├── bookings      { bookingId: {...} }
+├── payments      { paymentId: {...} }
+├── expenses      { expenseId: {...} }
+├── cashSessions  { sessionId: {...} }
+└── settings      (configurable lists and policy)
 ```
 
-Every operational document should include appropriate audit fields:
+Every operational record keeps the same audit fields:
 
 ```text
 createdAt
@@ -305,9 +375,32 @@ updatedBy
 propertyId
 ```
 
-Use Firestore server timestamps where appropriate.
+Requirements:
 
-Do not duplicate large amounts of data unnecessarily.
+* Each record carries its `id` inside the entry, because the flattened format
+  has no document id to key off.
+* Dates are stored as **ISO-8601 strings**. Raw `DateTime` values cannot be
+  JSON-encoded and will silently break persistence — use `toJsonMap()`, never
+  `toMap()`, when writing to disk or exporting.
+* Do not duplicate large amounts of data unnecessarily.
+
+## 9.2 Superseded — Firestore collections
+
+The original multi-collection design is retained for the cloud path:
+
+```text
+properties/{propertyId}
+users/{userId}
+rooms/{roomId}
+guests/{guestId}
+bookings/{bookingId}
+payments/{paymentId}
+expenses/{expenseId}
+settings/{settingId}
+```
+
+Firestore server timestamps no longer apply locally; device time is used, which
+is acceptable because there is only one writer (see section 23).
 
 ---
 
@@ -731,58 +824,75 @@ Avoid overly complicated UI.
 
 # 22. Offline Support
 
-Firestore offline persistence is required.
+**The device is always offline.** There is no network dependency, so every
+operational task works with no connectivity at all — this is stronger than the
+offline cache the original design required.
 
-The application should allow users to:
+The application must allow users to:
 
-* View cached rooms
-* View cached bookings
-* Create bookings while temporarily offline
-* Record payments while offline
-* Perform normal operational tasks offline
+* View rooms
+* View bookings
+* Create bookings
+* Record payments
+* Perform normal operational tasks
 
-When connectivity returns, Firestore should synchronize automatically.
+Data durability requirements:
 
-Do not implement custom synchronization unless required.
+* Writes must be flushed to disk immediately, not on exit.
+* A crash or force-close must not lose a completed booking.
+* A corrupt or unreadable data file must degrade to an empty state rather than
+  preventing the app from starting.
+* Writes must be serialized so two rapid saves cannot clobber each other.
 
-Clearly handle potential stale data.
+> **Note.** Firestore offline persistence was the original mechanism. Local
+> persistence replaces it, so no stale-data reconciliation is needed — there is
+> no remote copy to disagree with.
 
 ---
 
-# 23. Two-phone Synchronization
+# 23. Data Sharing and Reporting
 
-Phone A and Phone B will use the same Firebase project.
+There is **no automatic synchronization between devices.** This is a deliberate
+change from the original two-phone synchronization requirement.
 
-Changes should synchronize through Firestore.
-
-Example:
-
-```text
-Phone A
-  ↓
-Firestore
-  ↓
-Phone B
-```
-
-and:
+## Current model
 
 ```text
-Phone B
-  ↓
-Firestore
-  ↓
-Phone A
+Staff phone (source of truth)
+      │
+      ├─ manual export (CSV / JSON)
+      ▼
+   WhatsApp
+      │
+      ▼
+Admin's computer → admin_tool.html → browser localStorage
+      │
+      └─ download → Google Drive (manual upload by the admin)
 ```
 
-Do not use:
+Rules:
 
-* WhatsApp
-* manual exports
-* local file transfer
-* custom sync servers
+* The staff device owns the data. Exports are read-only snapshots.
+* Exports are user-initiated; nothing is ever sent automatically.
+* The admin tool is offline and requires no account, server or API key.
+* Google Drive is used by manual upload, not by an integrated API.
 
-Design repositories so both devices use the same data source.
+## Accepted trade-offs
+
+Because there is no live sync, the following are knowingly accepted:
+
+* **Single-writer assumption.** One staff device is the source of truth. Two
+  devices editing the same booking independently will not merge.
+* **No live two-device view.** The admin sees data only after an export.
+* **Manual reporting latency.** Reporting is as fresh as the last export.
+* **Backup is the admin's responsibility.** If the staff device is lost, data is
+  lost unless an export has been sent.
+
+## Still forbidden
+
+Do not introduce custom sync servers, background upload daemons, or any
+billable service to close the gap. If live sync becomes necessary, revisit the
+decision in section 31 rather than adding infrastructure silently.
 
 ---
 
@@ -804,19 +914,39 @@ Therefore:
 
 # 25. Security
 
-Firestore security rules must enforce:
+## 25.1 Current model — local trust boundary
 
-### Authentication
+With no backend there is no server-side rule engine, so security is enforced in
+three places instead:
 
-Unauthenticated users cannot access business data.
+| Layer | Control |
+| ----- | ------- |
+| Device | OS-level app sandbox; the data file is private to the app |
+| Transport | Exports travel over WhatsApp's own end-to-end encryption |
+| Application | Role-aware UI; destructive actions require confirmation |
 
-### Property isolation
+Requirements:
 
-Users should only access data belonging to their assigned property.
+* Unauthenticated use must not be possible once sign-in is enabled.
+* Configuration and user-management screens are admin-only.
+* Exported files must contain no credentials, tokens or keys.
+* Destructive actions (delete booking, cancel, clear data) require explicit
+  confirmation.
 
-### Admin
+## 25.2 Known exposure
 
-Admin can:
+Be explicit about what this design does **not** protect against:
+
+* A lost or stolen, unlocked device exposes all local data.
+* An exported file is only as private as the WhatsApp chat it is sent to.
+* Anyone with the file can read it; exports are unencrypted.
+
+If the property later needs stronger guarantees, that is the trigger to revisit
+the decision in section 31.
+
+## 25.3 Roles (unchanged)
+
+### Admin can
 
 * Manage property configuration
 * Manage rooms
@@ -825,20 +955,27 @@ Admin can:
 * Manage payments
 * Manage expenses
 * View reports
+* Trigger exports
 
-### Staff
-
-Staff can:
+### Staff can
 
 * View rooms
 * Create/update bookings
 * Check guests in/out
 * Record payments
 * View operational information
+* Trigger exports
 
 Restrict configuration/user-management operations to admins.
 
-Do not rely solely on UI hiding for security.
+Do not rely solely on UI hiding for authorization intent, but note that without a
+backend the rules are no longer independently enforceable — see 25.2.
+
+## 25.4 Superseded — Firestore rules
+
+The original requirement to enforce these rules through Firestore security rules
+is retained in `firestore.rules` for the cloud path and is not active while the
+application runs locally.
 
 ---
 
@@ -1006,7 +1143,12 @@ Implement in this order.
 * Room-wise
 * Payment-wise
 
-## Phase 11 — Firebase
+## Phase 11 — Firebase / Local Persistence
+
+*Superseded. Replaced by local persistence (done). The Firestore repositories,
+security rules and auth service remain in the repository, unused.*
+
+Original scope, if it is ever restored:
 
 * Firebase configuration
 * Authentication
@@ -1014,7 +1156,25 @@ Implement in this order.
 * Security rules
 * Offline support
 
-## Phase 12 — Multi-device testing
+## Phase 11′ — Local Persistence (replacement, done)
+
+* JSON document storage on device
+* Immediate write-through on every save
+* Serialized writes, corrupt-file recovery
+* Date serialization via `toJsonMap()`
+
+## Phase 11″ — Data Export (replacement, done)
+
+* CSV/JSON export of bookings, payments and guests
+* Share via the system share sheet (WhatsApp in practice)
+* Read-only snapshot; nothing is imported back
+* `admin_tool.html` for import, totals and CSV/JSON download on a computer
+
+## Phase 12 — Multi-device Testing
+
+*Superseded by section 23 — there is no automatic sync to test.*
+
+Original scope, retained for reference:
 
 Test:
 
@@ -1024,6 +1184,13 @@ Phone B → Firestore → Phone A
 ```
 
 Test offline → online synchronization.
+
+Replacement scope for the local design:
+
+* Create data on the staff device, close the app, reopen, confirm it persisted.
+* Export, import into `admin_tool.html`, confirm totals reconcile.
+* Force-close mid-operation and confirm no completed booking is lost.
+* Confirm the app starts with a corrupted data file.
 
 ## Phase 13 — Production hardening
 
@@ -1119,3 +1286,126 @@ Then report:
 ```
 
 Stop after Phase 1 and wait for approval.
+
+---
+
+# 31. Decision Record
+
+Amendments to this specification, in order. Every architectural change is
+recorded here with its rationale and trade-offs, so that future work does not
+silently reverse a decision without confronting the consequences.
+
+---
+
+## ADR-001 — Replace Firebase with local-first storage and manual export
+
+**Date:** 2026-10-10
+**Status:** Accepted
+**Sections affected:** 2, 6, 7, 9, 22, 23, 25, 28
+
+### Context
+
+The original specification mandated Firebase Authentication and Cloud Firestore,
+and explicitly forbade WhatsApp-based synchronization and manual exports.
+
+The owner asked to remove the cloud dependency entirely so the application can
+never incur a cloud bill, proposing:
+
+```text
+Staff phone  →  export  →  WhatsApp  →  Admin's computer
+                                                  ↓
+                                     download / upload to Google Drive
+```
+
+The conflict with the specification was raised before implementation began, and
+the owner accepted it and directed the change.
+
+### Decision
+
+The application stores data locally on the staff device and exports
+read-only snapshots over WhatsApp for the administrator. No cloud service is
+used or billed.
+
+### Rationale as given
+
+Absolute certainty of zero cloud cost.
+
+### Counter-argument recorded for future reference
+
+Firebase's free (Spark) tier allows 50,000 reads and 20,000 writes per day with
+no payment method required. For a property with ~9 rooms and a handful of daily
+bookings, usage would be a tiny fraction of that allowance. The Firestore design
+would very likely have remained free in practice while providing real-time sync,
+offline-first behaviour and automatic conflict handling — none of which the
+manual export provides.
+
+This is recorded so the trade-off is understood rather than assumed.
+
+### Consequences
+
+Gained:
+
+* Zero cloud cost, guaranteed.
+* No account, API key or service configuration.
+* Works with no connectivity, by construction.
+* Data stays on the property's own device.
+
+Lost:
+
+* No live synchronization between devices (section 23).
+* Single-writer only; concurrent edits cannot merge.
+* The admin's view is only as fresh as the last export.
+* Device loss means data loss unless an export was sent.
+* Local sign-in is a usability feature, not a security control (section 25.2).
+* Exported files are unencrypted and as private as the chat carrying them.
+
+### Reversal path
+
+The cloud implementation was deliberately **not deleted**:
+
+* `lib/data/repositories/firestore_config_repository.dart`
+* `lib/data/repositories/firestore_operations_repository.dart`
+* `lib/data/repositories/firebase_auth_service.dart`
+* `firestore.rules`, `firebase.json`, `.firebaserc`
+
+Restoring the cloud path means repointing `lib/main.dart` at those repositories
+and running `flutterfire configure`. No screen code needs to change, because
+both paths implement the same repository interfaces.
+
+### Triggers that should reopen this decision
+
+* Staff or admin requests live data on two devices simultaneously.
+* Data loss from a lost or damaged device causes real harm.
+* The manual export routine is missed often enough to affect reporting.
+* The property later requires enforceable role-based access control.
+
+---
+
+## ADR-002 — Store dates as ISO-8601 strings
+
+**Date:** 2026-10-10
+**Sections affected:** 9
+
+### Context
+
+Models expose two serializations: `toMap()` returns raw `DateTime` values
+because Firestore stores them as timestamps, while `toJsonMap()` returns
+ISO-8601 strings.
+
+### Problem found
+
+When local persistence was introduced, `toMap()` was used and `jsonEncode`
+threw `Converting object to an encodable object failed: Instance of 'DateTime'`
+on **every save**. Because the failure was swallowed to protect the UI, the app
+appeared to work while silently discarding all data.
+
+### Decision
+
+* `toMap()` is for Firestore only and may contain `DateTime`.
+* `toJsonMap()` is for disk and export and must contain only encodable values.
+* Anything writing JSON **must** use `toJsonMap()`.
+* A regression test covers a save/reload round trip.
+
+### Rule
+
+Never call `toMap()` when the result is passed to `jsonEncode`.
