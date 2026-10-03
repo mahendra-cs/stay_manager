@@ -1,4 +1,4 @@
-# stay_manager
+# Stay Manager
 
 A **configuration-driven** property / homestay management application for small
 properties (hotels, guest houses, homestays) built with **Flutter** and
