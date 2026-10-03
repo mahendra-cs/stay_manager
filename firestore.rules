@@ -1,0 +1,145 @@
+rules_version = '2';
+
+// Firestore security rules — spec §25.
+//
+// These rules are the real authority; the UI only hides affordances.
+//   * Unauthenticated users cannot read or write business data.
+//   * Users only ever touch documents belonging to their assigned propertyId.
+//   * ADMIN  -> full access to configuration, users and operations.
+//   * STAFF  -> operational access only (bookings, payments, expenses, rooms
+//               read). Configuration and user management stay admin-only.
+//
+// Deploy with:  firebase deploy --only firestore:rules
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ----- helpers ---------------------------------------------------------
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // The signed-in user's profile, or null when it does not exist yet.
+    function profile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function userProfile() {
+      return isSignedIn() ? profile() : null;
+    }
+
+    function role() {
+      return isSignedIn() ? userProfile().role : null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && role() == 'ADMIN';
+    }
+
+    function isStaff() {
+      return isSignedIn() && (role() == 'STAFF' || role() == 'ADMIN');
+    }
+
+    function myPropertyId() {
+      return isSignedIn() ? userProfile().propertyId : null;
+    }
+
+    function isActive() {
+      return isSignedIn() && userProfile().active == true;
+    }
+
+    // Property isolation: the document must belong to the caller's property.
+    function belongsToMyProperty() {
+      return isActive() && resource.data.propertyId == myPropertyId();
+    }
+
+    function writesMyProperty() {
+      return isActive() && request.resource.data.propertyId == myPropertyId();
+    }
+
+    // Active staff may read any of their property's operational documents.
+    function canReadOperations() {
+      return isStaff() && belongsToMyProperty();
+    }
+
+    function canWriteOperations() {
+      return isStaff() && writesMyProperty();
+    }
+
+    // ----- users -----------------------------------------------------------
+
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow create: if isSignedIn() && request.auth.uid == userId
+                    && request.resource.data.role == 'STAFF';
+      // Only an admin may change roles, activation or property assignment.
+      allow update: if isAdmin()
+                    && request.resource.data.propertyId == resource.data.propertyId;
+      allow delete: if isAdmin();
+    }
+
+    // ----- properties ------------------------------------------------------
+
+    match /properties/{propertyId} {
+      allow read: if isStaff() && propertyId == myPropertyId();
+      allow write: if isAdmin() && propertyId == myPropertyId();
+    }
+
+    // ----- rooms -----------------------------------------------------------
+
+    match /rooms/{roomId} {
+      allow read: if isStaff() && belongsToMyProperty();
+      // Staff may update room status (check-in/out, cleaning, blocking) but
+      // only within their own property.
+      allow create, delete: if isAdmin() && writesMyProperty();
+      allow update: if isStaff() && writesMyProperty();
+    }
+
+    // ----- guests ----------------------------------------------------------
+
+    match /guests/{guestId} {
+      allow read: if isStaff() && belongsToMyProperty();
+      allow write: if isStaff() && writesMyProperty();
+    }
+
+    // ----- bookings --------------------------------------------------------
+
+    match /bookings/{bookingId} {
+      allow read: if isStaff() && belongsToMyProperty();
+      allow write: if isStaff() && writesMyProperty();
+    }
+
+    // ----- payments --------------------------------------------------------
+
+    match /payments/{paymentId} {
+      allow read: if isStaff() && belongsToMyProperty();
+      allow write: if isStaff() && writesMyProperty();
+    }
+
+    // ----- expenses --------------------------------------------------------
+
+    match /expenses/{expenseId} {
+      allow read: if isAdmin() && belongsToMyProperty();
+      allow write: if isAdmin() && writesMyProperty();
+    }
+
+    // ----- cash sessions ---------------------------------------------------
+
+    match /cashSessions/{sessionId} {
+      allow read: if isAdmin() && belongsToMyProperty();
+      allow write: if isAdmin() && writesMyProperty();
+    }
+
+    // ----- settings --------------------------------------------------------
+
+    match /settings/{settingId} {
+      allow read: if isStaff() && belongsToMyProperty();
+      allow write: if isAdmin() && writesMyProperty();
+    }
+
+    // Anything not matched above is denied by default.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
