@@ -76,6 +76,15 @@ class Expense {
     );
   }
 
+  Map<String, dynamic> toJsonMap() {
+    final map = toMap();
+    for (final key in const <String>['date', 'createdAt', 'updatedAt']) {
+      final value = map[key];
+      if (value is DateTime) map[key] = value.toIso8601String();
+    }
+    return map;
+  }
+
   Map<String, dynamic> toMap() {
     return <String, dynamic>{
       'propertyId': propertyId,

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../auth/auth_scope.dart';
+import '../export/share_data_page.dart';
 import '../guests/guests_page.dart';
 import '../payments/payments_page.dart';
 import 'config_scope.dart';
@@ -85,6 +87,30 @@ class SettingsPage extends StatelessWidget {
           title: Text('Reports'),
           subtitle: Text('Coming soon'),
           enabled: false,
+        ),
+        ListTile(
+          leading: const Icon(Icons.ios_share),
+          title: const Text('Share booking data'),
+          subtitle: const Text('Send a snapshot to the admin over WhatsApp'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (context) => ShareDataPage(
+                adminName: property.name,
+              ),
+            ),
+          ),
+        ),
+        ListTile(
+          leading: const Icon(Icons.logout),
+          title: const Text('Sign out'),
+          subtitle: const Text('End this session on this device'),
+          onTap: () async {
+            await AuthScope.of(context).signOut();
+            if (context.mounted) {
+              Navigator.of(context).popUntil((route) => route.isFirst);
+            }
+          },
         ),
         const _SectionHeader('Administration'),
         const ListTile(

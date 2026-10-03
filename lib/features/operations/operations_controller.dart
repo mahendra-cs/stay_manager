@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../../core/errors/validation_exception.dart';
@@ -16,6 +18,7 @@ import '../../data/models/payment_mode.dart';
 import '../../data/models/room.dart';
 import '../../data/models/room_status.dart';
 import '../../data/repositories/operations_repository.dart';
+import '../../data/repositories/operations_sync_source.dart';
 import '../../data/repositories/room_status_writer.dart';
 
 /// Holds operational state (guests, bookings, payments, expenses, cash) and
@@ -54,6 +57,12 @@ class OperationsController extends ChangeNotifier {
   List<Expense> _expenses = const <Expense>[];
   List<CashSession> _cashSessions = const <CashSession>[];
 
+  /// Live subscriptions, present only when the repository can push updates.
+  final List<StreamSubscription<Object?>> _subscriptions =
+      <StreamSubscription<Object?>>[];
+
+  bool get isLive => _subscriptions.isNotEmpty;
+
   bool get isLoading => _isLoading;
 
   List<Guest> get guests => List<Guest>.unmodifiable(_guests);
@@ -64,17 +73,85 @@ class OperationsController extends ChangeNotifier {
       List<CashSession>.unmodifiable(_cashSessions);
 
   Future<void> load() async {
+    // Re-loading would otherwise stack duplicate live subscriptions.
+    await cancelSubscriptions();
+
     _isLoading = true;
     notifyListeners();
 
-    _guests = await _repository.loadGuests();
-    _bookings = await _repository.loadBookings();
-    _payments = await _repository.loadPayments();
-    _expenses = await _repository.loadExpenses();
-    _cashSessions = await _repository.loadCashSessions();
+    final source = _repository is OperationsSyncSource
+        ? _repository as OperationsSyncSource
+        : null;
 
+    if (source == null) {
+      // One-shot load (in-memory / tests).
+      _guests = await _repository.loadGuests();
+      _bookings = await _repository.loadBookings();
+      _payments = await _repository.loadPayments();
+      _expenses = await _repository.loadExpenses();
+      _cashSessions = await _repository.loadCashSessions();
+
+      _isLoading = false;
+      notifyListeners();
+      return;
+    }
+
+    // Live mode: each stream replaces its slice of state and repaints, so a
+    // booking created on Phone A appears on Phone B without a refresh
+    // (spec §16 "avoid excessive listeners" — one stream per collection).
+    _subscribe(
+      source.watchGuests().listen((items) {
+        _guests = items;
+        notifyListeners();
+      }),
+    );
+    _subscribe(
+      source.watchBookings().listen((items) {
+        _bookings = items;
+        notifyListeners();
+      }),
+    );
+    _subscribe(
+      source.watchPayments().listen((items) {
+        _payments = items;
+        notifyListeners();
+      }),
+    );
+    _subscribe(
+      source.watchExpenses().listen((items) {
+        _expenses = items;
+        notifyListeners();
+      }),
+    );
+    _subscribe(
+      source.watchCashSessions().listen((items) {
+        _cashSessions = items;
+        notifyListeners();
+      }),
+    );
+
+    // Firestore serves cached data immediately and syncs when online, so this
+    // resolves fast even with no connectivity (spec §22).
+    _guests = await _repository.loadGuests();
     _isLoading = false;
     notifyListeners();
+  }
+
+  void _subscribe(StreamSubscription<Object?> subscription) =>
+      _subscriptions.add(subscription);
+
+  /// Stops all live subscriptions. Called on [dispose] and before a re-load.
+  Future<void> cancelSubscriptions() async {
+    for (final subscription in _subscriptions) {
+      await subscription.cancel();
+    }
+    _subscriptions.clear();
+  }
+
+  @override
+  void dispose() {
+    unawaited(cancelSubscriptions());
+    super.dispose();
   }
 
   // ----- queries -----------------------------------------------------------

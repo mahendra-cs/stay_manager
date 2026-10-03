@@ -183,6 +183,27 @@ class Booking {
     );
   }
 
+  /// JSON-encodable view of this booking.
+  ///
+  /// [toMap] deliberately keeps raw `DateTime`s (Firestore stores them as
+  /// timestamps), so anything written to a JSON file or exported must convert
+  /// them to ISO-8601 strings first.
+  Map<String, dynamic> toJsonMap() {
+    final map = toMap();
+    for (final key in const <String>[
+      'checkInDate',
+      'checkOutDate',
+      'checkInAt',
+      'checkOutAt',
+      'createdAt',
+      'updatedAt',
+    ]) {
+      final value = map[key];
+      if (value is DateTime) map[key] = value.toIso8601String();
+    }
+    return map;
+  }
+
   Map<String, dynamic> toMap() {
     return <String, dynamic>{
       'propertyId': propertyId,

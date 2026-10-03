@@ -1,0 +1,235 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>stay_manager - Admin Data Tool</title>
+<style>
+  :root { --bg:#f5f7fa; --card:#fff; --line:#dde3ec; --text:#1f2937; --muted:#6b7280; --brand:#176b87; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { background:var(--brand); color:#fff; padding:16px 24px; }
+  header h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; opacity:.85; font-size:13px; }
+  main { max-width:1200px; margin:24px auto; padding:0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:20px; margin-bottom:20px; }
+  h2 { margin:0 0 12px; font-size:16px; }
+  button { background:var(--brand); color:#fff; border:0; border-radius:6px; padding:10px 16px; font-size:14px; cursor:pointer; }
+  button.secondary { background:#fff; color:var(--brand); border:1px solid var(--brand); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .stat { border:1px solid var(--line); border-radius:6px; padding:12px; }
+  .stat b { display:block; font-size:22px; }
+  .stat span { color:var(--muted); font-size:12px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { background:#eef2f7; position:sticky; top:0; }
+  .scroll { max-height:420px; overflow:auto; border:1px solid var(--line); border-radius:6px; }
+  .note { color:var(--muted); font-size:13px; margin-top:10px; }
+  #status { margin-top:10px; font-size:13px; }
+  .ok { color:#15803d; } .err { color:#b91c1c; }
+  label.toggle { display:flex; gap:8px; align-items:center; font-size:14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>stay_manager &mdash; Admin Data Tool</h1>
+  <p>Import booking data sent from the staff phone, store it locally, and export reports.</p>
+</header>
+<main>
+  <div class="card">
+    <h2>1. Import staff export</h2>
+    <div class="row">
+      <input type="file" id="fileInput" accept=".json,.csv,application/json,text/csv">
+      <button id="importBtn">Import file</button>
+    </div>
+    <p class="note">
+      Accepts the JSON bundle produced by the app. Data is stored only in this
+      browser (localStorage) &mdash; nothing is uploaded anywhere.
+    </p>
+    <div id="status"></div>
+  </div>
+
+  <div class="card">
+    <h2>2. Stored totals</h2>
+    <div class="stats">
+      <div class="stat"><b id="sBookings">0</b><span>Bookings</span></div>
+      <div class="stat"><b id="sRevenue">0</b><span>Total value</span></div>
+      <div class="stat"><b id="sPaid">0</b><span>Collected</span></div>
+      <div class="stat"><b id="sOutstanding">0</b><span>Outstanding</span></div>
+      <div class="stat"><b id="sGuests">0</b><span>Guests</span></div>
+      <div class="stat"><b id="sImports">0</b><span>Imports</span></div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button id="exportJsonBtn" class="secondary">Download JSON</button>
+      <button id="exportCsvBtn" class="secondary">Download CSV</button>
+      <button id="backupBtn" class="secondary">Download backup</button>
+      <button id="clearBtn" class="secondary">Clear all data</button>
+    </div>
+    <p class="note">
+      Save the files to your computer, then upload them to Google Drive whenever
+      you like. No Google account or API key is needed by this tool.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>3. Bookings</h2>
+    <label class="toggle">
+      <input type="checkbox" id="onlyUnpaid"> Show outstanding only
+    </label>
+    <div class="scroll" style="margin-top:12px">
+      <table>
+        <thead>
+          <tr>
+            <th>Guest</th><th>Phone</th><th>Room</th><th>Check-in</th>
+            <th>Check-out</th><th>Nights</th><th>Total</th>
+            <th>Outstanding</th><th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+<script>
+const KEY = 'stay_manager_admin';
+const $ = (id) => document.getElementById(id);
+const state = load();
+
+function load() {
+  try { return JSON.parse(localStorage.getItem(KEY)) || {bookings:[],payments:[],guests:[],imports:0,property:''}; }
+  catch { return {bookings:[],payments:[],guests:[],imports:0,property:''}; }
+}
+function save() { localStorage.setItem(KEY, JSON.stringify(state)); }
+
+function status(msg, isErr) {
+  $('status').innerHTML = '<span class="' + (isErr ? 'err' : 'ok') + '">' + msg + '</span>';
+}
+
+function date(v) { return v ? String(v).slice(0,10) : ''; }
+
+function merge(list, incoming, key) {
+  const map = new Map(list.map(x => [x[key], x]));
+  (incoming || []).forEach(x => { if (x[key]) map.set(x[key], {...map.get(x[key]), ...x}); });
+  return [...map.values()];
+}
+
+function importJson(data) {
+  state.bookings = merge(state.bookings, data.bookings, 'id');
+  state.payments  = merge(state.payments,  data.payments,  'id');
+  state.guests    = merge(state.guests,    data.guests,    'id');
+  state.imports += 1;
+  if (data.property) state.property = data.property;
+  save(); render();
+  status('Imported ' + (data.bookings||[]).length + ' bookings, '
+       + (data.payments||[]).length + ' payments, ' + (data.guests||[]).length + ' guests.');
+}
+
+function totals() {
+  const num = (o) => {
+    const v = parseFloat(o);
+    return isNaN(v) ? 0 : v;
+  };
+  let revenue = 0, paid = 0, outstanding = 0;
+  const paidByBooking = {};
+  state.payments.forEach(p => { paidByBooking[p.bookingId] = (paidByBooking[p.bookingId] || 0) + num(p.amount); });
+  state.bookings.forEach(b => {
+    revenue += num(b.total);
+    paid += paidByBooking[b.id] || 0;
+    outstanding += Math.max(0, num(b.total) - (paidByBooking[b.id] || 0));
+  });
+  return {revenue, paid, outstanding};
+}
+
+function render() {
+  const t = totals();
+  $('sBookings').textContent = state.bookings.length;
+  $('sRevenue').textContent  = t.revenue.toFixed(2);
+  $('sPaid').textContent     = t.paid.toFixed(2);
+  $('sOutstanding').textContent = t.outstanding.toFixed(2);
+  $('sGuests').textContent   = state.guests.length;
+  $('sImports').textContent  = state.imports;
+
+  const paidByBooking = {};
+  state.payments.forEach(p => { paidByBooking[p.bookingId] = (paidByBooking[p.bookingId] || 0) + (parseFloat(p.amount) || 0); });
+  const onlyUnpaid = $('onlyUnpaid').checked;
+  const rows = state.bookings
+    .map(b => ({...b, outstanding: Math.max(0, (parseFloat(b.total)||0) - (paidByBooking[b.id]||0))}))
+    .filter(b => !onlyUnpaid || b.outstanding > 0)
+    .sort((a,b) => String(b.checkInDate).localeCompare(String(a.checkInDate)));
+
+  $('rows').innerHTML = rows.map(b =>
+    '<tr><td>' + esc(b.guestName) + '</td><td>' + esc(b.guestPhone) + '</td>'
+    + '<td>' + esc(b.roomId) + '</td><td>' + date(b.checkInDate) + '</td>'
+    + '<td>' + date(b.checkOutDate) + '</td><td>' + esc(b.numberOfNights) + '</td>'
+    + '<td>' + (parseFloat(b.total)||0).toFixed(2) + '</td>'
+    + '<td>' + b.outstanding.toFixed(2) + '</td><td>' + esc(b.bookingStatus) + '</td></tr>'
+  ).join('') || '<tr><td colspan="9">No bookings imported yet.</td></tr>';
+}
+
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+function download(name, text, type) {
+  const blob = new Blob([text], {type: type || 'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function toCsv(rows, headers) {
+  const q = (v) => {
+    const s = String(v == null ? '' : v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+  };
+  return [headers.join(',')].concat(rows.map(r => headers.map(h => q(r[h])).join(','))).join('\n');
+}
+
+$('importBtn').onclick = () => {
+  const f = $('fileInput').files[0];
+  if (!f) { status('Choose a file first.', true); return; }
+  const reader = new FileReader();
+  reader.onload = () => {
+    try { importJson(JSON.parse(reader.result)); }
+    catch { status('That file is not a valid JSON export.', true); }
+  };
+  reader.readAsText(f);
+};
+
+$('exportJsonBtn').onclick = () =>
+  download('stay_manager_export.json', JSON.stringify(state, null, 2));
+
+$('exportCsvBtn').onclick = () => {
+  const paidByBooking = {};
+  state.payments.forEach(p => { paidByBooking[p.bookingId] = (paidByBooking[p.bookingId]||0) + (parseFloat(p.amount)||0); });
+  const rows = state.bookings.map(b => ({
+    Guest: b.guestName, Phone: b.guestPhone, Room: b.roomId,
+    CheckIn: date(b.checkInDate), CheckOut: date(b.checkOutDate),
+    Nights: b.numberOfNights, Total: b.total,
+    Paid: (paidByBooking[b.id]||0).toFixed(2),
+    Outstanding: Math.max(0,(parseFloat(b.total)||0)-(paidByBooking[b.id]||0)).toFixed(2),
+    Status: b.bookingStatus
+  }));
+  download('stay_manager_bookings.csv', toCsv(rows,
+    ['Guest','Phone','Room','CheckIn','CheckOut','Nights','Total','Paid','Outstanding','Status']), 'text/csv');
+};
+
+$('backupBtn').onclick = () =>
+  download('stay_manager_backup_' + new Date().toISOString().slice(0,10) + '.json', JSON.stringify(state, null, 2));
+
+$('clearBtn').onclick = () => {
+  if (confirm('Delete everything stored in this browser?')) {
+    state = {bookings:[],payments:[],guests:[],imports:0,property:''};
+    save(); render(); status('Cleared.', true);
+  }
+};
+
+$('onlyUnpaid').onchange = render;
+render();
+</script>
+</body>
+</html>

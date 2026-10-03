@@ -1,4 +1,4 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+﻿import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../models/booking.dart';
 import '../models/cash_session.dart';
@@ -6,19 +6,21 @@ import '../models/expense.dart';
 import '../models/guest.dart';
 import '../models/payment.dart';
 import 'operations_repository.dart';
+import 'operations_sync_source.dart';
 
-/// Firestore-backed implementation of [OperationsRepository] (spec §13/§17).
+/// Firestore-backed implementation of [OperationsRepository] (spec 13/17).
 ///
-/// Mirrors the specified collections (`guests`, `bookings`, `payments`,
-/// `expenses`) and always scopes queries by `propertyId` so a user can only
-/// ever touch their own property's data — enforced again by security rules,
-/// never by the UI alone (spec §25).
-class FirestoreOperationsRepository implements OperationsRepository {
+/// Mirrors the specified collections (guests, bookings, payments, expenses)
+/// and always scopes queries by `propertyId`, so a user can only ever touch
+/// their own property's data. The security rules enforce this again on the
+/// server side - the query scoping is convenience, not the boundary.
+class FirestoreOperationsRepository
+    implements OperationsRepository, OperationsSyncSource {
   FirestoreOperationsRepository({
     required FirebaseFirestore firestore,
     required String propertyId,
   }) :
-        // Named parameters cannot be private, so the fields are assigned here.
+        // Named parameters cannot be private, so fields are assigned here.
         // ignore: prefer_initializing_formals
         _db = firestore,
         // ignore: prefer_initializing_formals
@@ -58,13 +60,29 @@ class FirestoreOperationsRepository implements OperationsRepository {
     );
   }
 
-  // ----- guests ------------------------------------------------------------
+  // ----- one-shot reads ---------------------------------------------------
 
   @override
-  Future<List<Guest>> loadGuests() => _loadAll(
-        'guests',
-        (id, data) => Guest.fromMap(id, data),
-      );
+  Future<List<Guest>> loadGuests() =>
+      _loadAll('guests', (id, data) => Guest.fromMap(id, data));
+
+  @override
+  Future<List<Booking>> loadBookings() =>
+      _loadAll('bookings', (id, data) => Booking.fromMap(id, data));
+
+  @override
+  Future<List<Payment>> loadPayments() =>
+      _loadAll('payments', (id, data) => Payment.fromMap(id, data));
+
+  @override
+  Future<List<Expense>> loadExpenses() =>
+      _loadAll('expenses', (id, data) => Expense.fromMap(id, data));
+
+  @override
+  Future<List<CashSession>> loadCashSessions() =>
+      _loadAll('cashSessions', (id, data) => CashSession.fromMap(id, data));
+
+  // ----- writes ------------------------------------------------------------
 
   @override
   Future<void> saveGuest(Guest guest) => _save(
@@ -79,14 +97,6 @@ class FirestoreOperationsRepository implements OperationsRepository {
     await _scoped('guests').doc(guestId).delete();
   }
 
-  // ----- bookings ----------------------------------------------------------
-
-  @override
-  Future<List<Booking>> loadBookings() => _loadAll(
-        'bookings',
-        (id, data) => Booking.fromMap(id, data),
-      );
-
   @override
   Future<void> saveBooking(Booking booking) => _save(
         'bookings',
@@ -99,14 +109,6 @@ class FirestoreOperationsRepository implements OperationsRepository {
   Future<void> deleteBooking(String bookingId) async {
     await _scoped('bookings').doc(bookingId).delete();
   }
-
-  // ----- payments ----------------------------------------------------------
-
-  @override
-  Future<List<Payment>> loadPayments() => _loadAll(
-        'payments',
-        (id, data) => Payment.fromMap(id, data),
-      );
 
   @override
   Future<void> savePayment(Payment payment) => _save(
@@ -121,14 +123,6 @@ class FirestoreOperationsRepository implements OperationsRepository {
     await _scoped('payments').doc(paymentId).delete();
   }
 
-  // ----- expenses ----------------------------------------------------------
-
-  @override
-  Future<List<Expense>> loadExpenses() => _loadAll(
-        'expenses',
-        (id, data) => Expense.fromMap(id, data),
-      );
-
   @override
   Future<void> saveExpense(Expense expense) => _save(
         'expenses',
@@ -142,14 +136,6 @@ class FirestoreOperationsRepository implements OperationsRepository {
     await _scoped('expenses').doc(expenseId).delete();
   }
 
-  // ----- cash --------------------------------------------------------------
-
-  @override
-  Future<List<CashSession>> loadCashSessions() => _loadAll(
-        'cashSessions',
-        (id, data) => CashSession.fromMap(id, data),
-      );
-
   @override
   Future<void> saveCashSession(CashSession session) => _save(
         'cashSessions',
@@ -157,4 +143,54 @@ class FirestoreOperationsRepository implements OperationsRepository {
         session.toMap(),
         createdAt: session.createdAt,
       );
+
+  // ----- live updates ------------------------------------------------------
+  //
+  // These streams are what make Phone A and Phone B converge (spec 23).
+  // Firestore pushes a new snapshot on every remote change - including changes
+  // made by the other device - so no custom synchronisation layer is needed.
+
+  @override
+  Stream<List<Guest>> watchGuests() => _watch(
+        'guests',
+        (id, data) => Guest.fromMap(id, data),
+      );
+
+  @override
+  Stream<List<Booking>> watchBookings() => _watch(
+        'bookings',
+        (id, data) => Booking.fromMap(id, data),
+      );
+
+  @override
+  Stream<List<Payment>> watchPayments() => _watch(
+        'payments',
+        (id, data) => Payment.fromMap(id, data),
+      );
+
+  @override
+  Stream<List<Expense>> watchExpenses() => _watch(
+        'expenses',
+        (id, data) => Expense.fromMap(id, data),
+      );
+
+  @override
+  Stream<List<CashSession>> watchCashSessions() => _watch(
+        'cashSessions',
+        (id, data) => CashSession.fromMap(id, data),
+      );
+
+  Stream<List<T>> _watch<T>(
+    String collection,
+    T Function(String id, Map<String, dynamic> data) fromDoc,
+  ) {
+    return _scoped(collection)
+        .where('propertyId', isEqualTo: _propertyId)
+        .snapshots()
+        .map(
+          (snapshot) => [
+            for (final doc in snapshot.docs) fromDoc(doc.id, doc.data()),
+          ],
+        );
+  }
 }

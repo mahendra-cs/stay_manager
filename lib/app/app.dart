@@ -3,8 +3,14 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../data/models/app_settings.dart';
+import '../data/models/app_user.dart';
+import '../data/repositories/auth_service.dart';
+import '../data/repositories/in_memory_auth_service.dart';
 import '../data/repositories/in_memory_config_repository.dart';
 import '../data/repositories/in_memory_operations_repository.dart';
+import '../features/auth/auth_controller.dart';
+import '../features/auth/auth_scope.dart';
+import '../features/auth/login_page.dart';
 import '../features/bookings/booking_form_page.dart';
 import '../features/bookings/bookings_page.dart';
 import '../features/dashboard/dashboard_page.dart';
@@ -29,10 +35,20 @@ class StayManagerApp extends StatefulWidget {
     super.key,
     this.configController,
     this.operationsController,
+    this.authController,
+    this.requireSignIn = false,
   });
 
   final ConfigController? configController;
   final OperationsController? operationsController;
+
+  /// When null and [requireSignIn] is true, a local offline auth service is
+  /// used so the app is usable without Firebase.
+  final AuthController? authController;
+
+  /// Forces the login screen. Left false while Firebase is not configured so
+  /// the app remains usable during development.
+  final bool requireSignIn;
 
   @override
   State<StayManagerApp> createState() => _StayManagerAppState();
@@ -54,6 +70,13 @@ class _StayManagerAppState extends State<StayManagerApp> {
             : _config.settings,
       );
 
+  late final AuthController _auth = widget.authController ??
+      AuthController(
+        widget.requireSignIn
+            ? InMemoryAuthService()
+            : _AlwaysSignedInService(),
+      );
+
   @override
   void initState() {
     super.initState();
@@ -70,6 +93,7 @@ class _StayManagerAppState extends State<StayManagerApp> {
 
   @override
   void dispose() {
+    if (widget.authController == null) _auth.dispose();
     if (widget.operationsController == null) _operations.dispose();
     if (widget.configController == null) _config.dispose();
     super.dispose();
@@ -81,14 +105,82 @@ class _StayManagerAppState extends State<StayManagerApp> {
       controller: _operations,
       child: ConfigScope(
         controller: _config,
-        child: MaterialApp(
-          title: 'Property Manager',
-          theme: AppTheme.light,
-          home: const AppShell(),
+        child: AuthScope(
+          controller: _auth,
+          child: MaterialApp(
+            title: 'Property Manager',
+            theme: AppTheme.light,
+            home: widget.requireSignIn
+                ? const AuthGate(child: AppShell())
+                : const AppShell(),
+          ),
         ),
       ),
     );
   }
+}
+
+/// Shows the login screen until a user is signed in.
+///
+/// Kept separate from `MaterialApp` so the screen can be swapped without
+/// rebuilding the navigator.
+class AuthGate extends StatelessWidget {
+  const AuthGate({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final auth = AuthScope.of(context);
+    final config = ConfigScope.of(context);
+
+    if (!auth.isSignedIn) {
+      return LoginPage(
+        propertyName: config.isLoading ? '' : config.property.name,
+      );
+    }
+    return child;
+  }
+}
+
+/// Auth service used before Firebase is configured: the app behaves as if an
+/// admin were signed in, so local development is never blocked by a missing
+/// project. Swap for `FirebaseAuthService` as soon as Firebase is connected.
+class _AlwaysSignedInService implements AuthService {
+  final _controller = StreamController<AppUser?>.broadcast();
+  late final AppUser _user = AppUser(
+    id: 'local-admin',
+    displayName: 'Local Admin',
+    email: 'local@localhost',
+    role: UserRole.admin,
+    propertyId: 'property-default',
+  );
+
+  @override
+  AppUser? get currentUser => _user;
+
+  @override
+  Stream<AppUser?> get userChanges => _controller.stream;
+
+  @override
+  Future<AppUser> signIn({
+    required String email,
+    required String password,
+  }) async =>
+      _user;
+
+  @override
+  Future<AppUser> signUp({
+    required String email,
+    required String password,
+    required String displayName,
+    required String propertyId,
+    required UserRole role,
+  }) async =>
+      _user;
+
+  @override
+  Future<void> signOut() async {}
 }
 
 class AppShell extends StatefulWidget {
